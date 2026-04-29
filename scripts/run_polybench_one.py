@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -14,27 +16,32 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from vallmopt.analysis.summarize import summarize_records, write_summary  # noqa: E402
 from vallmopt.arch import get_architecture, load_architectures  # noqa: E402
 from vallmopt.benchmark.runner import benchmark_commands  # noqa: E402
-from vallmopt.build.cbuild import construct_gcc_command  # noqa: E402
-from vallmopt.build.polybench import PolyBenchBuildSpec  # noqa: E402
+from vallmopt.build.polybench import (  # noqa: E402
+    DEFAULT_POLYBENCH_CFLAGS,
+    PolyBenchBuildSpec,
+    construct_polybench_compile_command,
+    make_polybench_build_spec,
+)
 from vallmopt.config import load_yaml  # noqa: E402
-from vallmopt.datasets.polybench import get_polybench_kernel, load_polybench_config  # noqa: E402
+from vallmopt.datasets.polybench import PolyBenchKernel, get_polybench_kernel, load_polybench_config  # noqa: E402
 from vallmopt.generation import MockGenerator  # noqa: E402
 from vallmopt.logging.jsonl import append_jsonl  # noqa: E402
 from vallmopt.logging.schema import CandidateRecord, VerifyGateResult, VerifyRecord, git_commit, to_jsonable  # noqa: E402
 from vallmopt.prompts import PromptBuilder  # noqa: E402
 from vallmopt.utils.hashing import sha256_file, sha256_text  # noqa: E402
 from vallmopt.utils.paths import ensure_dir  # noqa: E402
-from vallmopt.utils.subprocess import command_to_string  # noqa: E402
+from vallmopt.utils.subprocess import CommandResult, command_to_string, run_command  # noqa: E402
 from vallmopt.utils.tools import find_executable  # noqa: E402
-from vallmopt.verify.pipeline import VerifyPipeline  # noqa: E402
+from vallmopt.verify.output import compare_program_outputs  # noqa: E402
+from vallmopt.verify.runtime import build_run_command  # noqa: E402
 from vallmopt.verify.safety import check_safety_file  # noqa: E402
 
 
-POLYBENCH_BUILD_SKIP_REASON = "polybench build glue not implemented yet"
+DATASET_SIZES = ["MINI", "SMALL", "MEDIUM", "LARGE", "EXTRALARGE"]
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a one-kernel PolyBench/C infrastructure workflow.")
+    parser = argparse.ArgumentParser(description="Run a one-kernel PolyBench/C workflow.")
     parser.add_argument("--polybench-root", required=True, type=Path)
     parser.add_argument("--kernel", required=True)
     parser.add_argument("--arch-tag", required=True)
@@ -43,7 +50,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-benchmark", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
-    parser.add_argument("--size", default=None, choices=["MINI", "SMALL", "MEDIUM", "LARGE", "EXTRALARGE"])
+    parser.add_argument("--size", default="LARGE", choices=DATASET_SIZES)
+    parser.add_argument("--mode", default="verify", choices=["verify", "benchmark"])
+    parser.add_argument("--compiler", default="gcc")
+    parser.add_argument("--cflags-extra", action="append", default=[], help="Extra compiler flags, shell-split.")
+    parser.add_argument("--compare-stream", default="auto", choices=["auto", "stdout", "stderr", "combined"])
+    parser.add_argument("--dump-arrays", dest="dump_arrays", action="store_true", default=None)
+    parser.add_argument("--no-dump-arrays", dest="dump_arrays", action="store_false")
     parser.add_argument("--polybench-config", default=REPO_ROOT / "configs" / "polybench.default.yaml", type=Path)
     parser.add_argument("--arch-config", default=REPO_ROOT / "configs" / "architectures.yaml", type=Path)
     parser.add_argument("--prompt-config", default=REPO_ROOT / "configs" / "prompts.default.yaml", type=Path)
@@ -133,45 +146,51 @@ def main() -> int:
     )
     append_jsonl(work_dir / "candidates.jsonl", candidate_record)
 
-    compiler_flags = _polybench_compiler_flags(kernel, architecture.cflags_extra)
-    build_spec = PolyBenchBuildSpec(
+    dump_arrays = args.dump_arrays if args.dump_arrays is not None else args.mode == "verify"
+    build_mode = "verify" if dump_arrays else "benchmark"
+    cflags = _merge_flags(DEFAULT_POLYBENCH_CFLAGS, architecture.cflags_extra, _split_cflags(args.cflags_extra))
+    suffix = ".exe" if os.name == "nt" else ""
+    polybench_root = Path(args.polybench_root).expanduser().resolve()
+    reference_spec = make_polybench_build_spec(
+        polybench_root=polybench_root,
+        kernel=kernel,
+        source_path=kernel.source_path,
+        output_path=work_dir / f"reference{suffix}",
+        size=args.size,
+        mode=build_mode,
+        compiler=args.compiler,
+        cflags=cflags,
+    )
+    candidate_spec = make_polybench_build_spec(
+        polybench_root=polybench_root,
+        kernel=kernel,
         source_path=candidate_path,
-        include_dirs=kernel.extra_include_dirs,
-        defines=kernel.compile_defines,
-        cflags=architecture.cflags_extra,
-        executable_path=work_dir / ("candidate.exe" if os.name == "nt" else "candidate"),
+        output_path=work_dir / f"candidate{suffix}",
+        size=args.size,
+        mode=build_mode,
+        compiler=args.compiler,
+        cflags=cflags,
     )
 
-    if _needs_full_polybench_build_glue(reference_code, kernel.name):
-        verify_record = _build_glue_skipped_verify_record(
-            kernel_name=args.kernel,
-            arch_tag=args.arch_tag,
-            isa=architecture.isa,
-            reference_path=kernel.source_path,
-            candidate_path=candidate_path,
-            work_dir=work_dir,
-            prompt_hash=prompt_hash,
-            generator_name=generator_name,
-            config_path=str(args.verify_config),
-            compiler_flags=compiler_flags,
-            build_spec=build_spec,
-            dry_run=args.dry_run,
-        )
-    else:
-        verify_record = VerifyPipeline(verify_config, dry_run=args.dry_run).run(
-            kernel_name=args.kernel,
-            arch_tag=args.arch_tag,
-            isa=architecture.isa,
-            reference_path=kernel.source_path,
-            candidate_path=candidate_path,
-            work_dir=work_dir,
-            compiler_flags=compiler_flags,
-            runtime_args=kernel.run_args,
-            prompt_hash=prompt_hash,
-            generator_name=generator_name,
-            config_path=str(args.verify_config),
-        )
-
+    verify_record = _run_polybench_verification(
+        kernel_name=args.kernel,
+        arch_tag=args.arch_tag,
+        isa=architecture.isa,
+        reference_path=kernel.source_path,
+        candidate_path=candidate_path,
+        reference_spec=reference_spec,
+        candidate_spec=candidate_spec,
+        kernel=kernel,
+        work_dir=work_dir,
+        prompt_hash=prompt_hash,
+        generator_name=generator_name,
+        config_path=str(args.verify_config),
+        verify_config=verify_config,
+        dry_run=args.dry_run,
+        compare_stream=args.compare_stream,
+        dump_arrays=dump_arrays,
+        mode=args.mode,
+    )
     verify_json = to_jsonable(verify_record)
     (work_dir / "verify_record.json").write_text(
         json.dumps(verify_json, indent=2, sort_keys=True) + "\n",
@@ -181,11 +200,10 @@ def main() -> int:
 
     records_for_summary = [candidate_json, verify_json]
     benchmark_record = None
-    if not args.skip_benchmark and verify_record.status == "pass" and not args.dry_run:
-        suffix = ".exe" if os.name == "nt" else ""
+    if not args.skip_benchmark and not args.dry_run and not _has_failed_gate(verify_record):
         benchmark_record = benchmark_commands(
-            baseline_cmd=str(work_dir / f"reference{suffix}"),
-            candidate_cmd=str(work_dir / f"candidate{suffix}"),
+            baseline_cmd=str(reference_spec.executable_path),
+            candidate_cmd=str(candidate_spec.executable_path),
             repeats=args.benchmark_repeats,
             kernel_name=args.kernel,
             arch_tag=args.arch_tag,
@@ -205,14 +223,20 @@ def main() -> int:
         {
             "dataset": "polybench",
             "kernel": args.kernel,
-            "polybench_root": str(Path(args.polybench_root).expanduser().resolve()),
+            "mode": args.mode,
+            "size": args.size,
+            "dump_arrays": dump_arrays,
+            "compare_stream_requested": args.compare_stream,
+            "compare_stream_used": verify_record.metadata.get("compare_stream_used"),
+            "polybench_root": str(polybench_root),
             "polybench_source_path": str(kernel.source_path),
             "prompt_path": str(prompt_path),
             "candidate_path": str(candidate_path),
             "candidate_log": str(work_dir / "candidates.jsonl"),
             "verify_log": str(work_dir / "verify.jsonl"),
             "benchmark_log": str(work_dir / "benchmark.jsonl") if benchmark_record else None,
-            "build_spec": _build_spec_json(build_spec),
+            "reference_build_spec": _build_spec_json(reference_spec),
+            "candidate_build_spec": _build_spec_json(candidate_spec),
             "tools": {
                 "gcc": find_executable("gcc"),
                 "clang": find_executable("clang"),
@@ -233,6 +257,8 @@ def main() -> int:
     for gate in verify_record.gates:
         detail = f" ({gate.failure_reason})" if gate.failure_reason else ""
         print(f"  - {gate.gate_name}: {gate.status}{detail}")
+    if verify_record.metadata.get("compare_stream_used"):
+        print(f"Compared stream: {verify_record.metadata['compare_stream_used']}")
     if benchmark_record is not None:
         print(f"Benchmark status: {benchmark_record.status}")
     elif args.skip_benchmark:
@@ -246,78 +272,91 @@ def main() -> int:
     return 0
 
 
-def _polybench_compiler_flags(kernel: Any, arch_flags: list[str]) -> list[str]:
-    flags: list[str] = []
-    for include_dir in kernel.extra_include_dirs:
-        flags.extend(["-I", str(include_dir)])
-    for define in kernel.compile_defines:
-        flags.append(define if str(define).startswith("-D") else f"-D{define}")
-    flags.extend(arch_flags)
-    return flags
-
-
-def _needs_full_polybench_build_glue(source_text: str, kernel_name: str) -> bool:
-    markers = [
-        "polybench.h",
-        "polybench_alloc_data",
-        "polybench_free_data",
-        "POLYBENCH_",
-        f'"{kernel_name}.h"',
-        f"<{kernel_name}.h>",
-    ]
-    return any(marker in source_text for marker in markers)
-
-
-def _build_glue_skipped_verify_record(
+def _run_polybench_verification(
     *,
     kernel_name: str,
     arch_tag: str,
     isa: str,
     reference_path: Path,
     candidate_path: Path,
+    reference_spec: PolyBenchBuildSpec,
+    candidate_spec: PolyBenchBuildSpec,
+    kernel: PolyBenchKernel,
     work_dir: Path,
     prompt_hash: str,
     generator_name: str,
     config_path: str,
-    compiler_flags: list[str],
-    build_spec: PolyBenchBuildSpec,
+    verify_config: dict[str, Any],
     dry_run: bool,
+    compare_stream: str,
+    dump_arrays: bool,
+    mode: str,
 ) -> VerifyRecord:
-    compile_command = construct_gcc_command(
-        source=build_spec.source_path,
-        output=build_spec.executable_path or work_dir / "candidate",
-        include_dirs=build_spec.include_dirs,
-        defines=build_spec.defines,
-        cflags=build_spec.cflags,
-        ldflags=build_spec.ldflags,
-    )
-    gates = [
-        VerifyGateResult(
-            gate_name="compile",
-            status="skipped",
-            command=command_to_string(compile_command),
-            failure_reason=POLYBENCH_BUILD_SKIP_REASON,
-        ),
-        VerifyGateResult(
-            gate_name="runtime",
-            status="skipped",
-            failure_reason=POLYBENCH_BUILD_SKIP_REASON,
-        ),
-        VerifyGateResult(
-            gate_name="output",
-            status="skipped",
-            failure_reason=POLYBENCH_BUILD_SKIP_REASON,
-        ),
-        VerifyGateResult(
-            gate_name="sanitizer",
-            status="skipped",
-            failure_reason=POLYBENCH_BUILD_SKIP_REASON,
-        ),
-        check_safety_file(candidate_path),
-    ]
-    safety_gate = gates[-1]
-    status = "fail" if safety_gate.status == "fail" else "skipped"
-    failure_reason = safety_gate.failure_reason if safety_gate.status == "fail" else POLYBENCH_BUILD_SKIP_REASON
+    gates: list[VerifyGateResult] = []
+    compare_stream_used: str | None = None
+
+    compile_gate = _compile_polybench_pair(reference_spec, candidate_spec, dry_run=dry_run)
+    gates.append(compile_gate)
+    reference_run: CommandResult | None = None
+    candidate_run: CommandResult | None = None
+
+    if compile_gate.status == "fail":
+        gates.extend(_skipped_after_failure("runtime", "output", "sanitizer", "safety"))
+    else:
+        runtime_gate, reference_run, candidate_run = _run_polybench_pair(
+            reference_spec,
+            candidate_spec,
+            run_args=kernel.run_args,
+            timeout_sec=float(verify_config.get("runtime", {}).get("timeout_sec", 10)),
+            dry_run=dry_run,
+        )
+        gates.append(runtime_gate)
+
+        if runtime_gate.status == "fail":
+            gates.extend(_skipped_after_failure("output", "sanitizer", "safety"))
+        else:
+            if not dump_arrays or mode != "verify":
+                output_gate = VerifyGateResult(
+                    gate_name="output",
+                    status="skipped",
+                    failure_reason="dumped output comparison disabled outside verify mode",
+                )
+            elif reference_run is None or candidate_run is None:
+                output_gate = VerifyGateResult(
+                    gate_name="output",
+                    status="skipped",
+                    failure_reason="dry-run",
+                )
+            else:
+                output_gate, compare_stream_used = compare_program_outputs(
+                    reference_stdout=reference_run.stdout,
+                    reference_stderr=reference_run.stderr,
+                    candidate_stdout=candidate_run.stdout,
+                    candidate_stderr=candidate_run.stderr,
+                    compare_stream=compare_stream,
+                    ignore_timing=True,
+                )
+                output_gate.command = f"compare normalized {compare_stream_used}"
+                output_gate.elapsed_sec = 0.0
+            gates.append(output_gate)
+
+            if output_gate.status == "fail":
+                gates.extend(_skipped_after_failure("sanitizer", "safety"))
+            else:
+                sanitizer_gate = _run_polybench_sanitizer_gate(
+                    candidate_spec,
+                    verify_config=verify_config,
+                    run_args=kernel.run_args,
+                    dry_run=dry_run,
+                )
+                gates.append(sanitizer_gate)
+
+                if sanitizer_gate.status == "fail":
+                    gates.extend(_skipped_after_failure("safety"))
+                else:
+                    gates.append(check_safety_file(candidate_path))
+
+    status, failure_reason = _overall_status(gates)
     return VerifyRecord(
         kernel_name=kernel_name,
         arch_tag=arch_tag,
@@ -332,22 +371,313 @@ def _build_glue_skipped_verify_record(
         config_path=config_path,
         failure_reason=failure_reason,
         work_dir=str(work_dir),
-        compiler_flags=compiler_flags,
+        compiler_flags=candidate_spec.cflags,
         metadata={
             "dry_run": dry_run,
-            "polybench_build_glue": "not_implemented",
+            "polybench_build_glue": "implemented",
+            "compare_stream_requested": compare_stream,
+            "compare_stream_used": compare_stream_used,
+            "dump_arrays": dump_arrays,
+            "mode": mode,
         },
     )
+
+
+def _compile_polybench_pair(
+    reference_spec: PolyBenchBuildSpec,
+    candidate_spec: PolyBenchBuildSpec,
+    *,
+    dry_run: bool,
+) -> VerifyGateResult:
+    reference_command = construct_polybench_compile_command(reference_spec)
+    candidate_command = construct_polybench_compile_command(candidate_spec)
+    command_text = f"{command_to_string(reference_command)} && {command_to_string(candidate_command)}"
+    if dry_run:
+        return VerifyGateResult(
+            gate_name="compile",
+            status="skipped",
+            command=command_text,
+            failure_reason="dry-run",
+        )
+    if find_executable(reference_spec.compiler) is None:
+        return VerifyGateResult(
+            gate_name="compile",
+            status="fail",
+            command=command_text,
+            failure_reason=f"compiler not found on PATH: {reference_spec.compiler}",
+        )
+    reference_result = run_command(reference_command)
+    if reference_result.returncode != 0:
+        return VerifyGateResult(
+            gate_name="compile",
+            status="fail",
+            command=command_text,
+            stdout=reference_result.stdout,
+            stderr=reference_result.stderr,
+            elapsed_sec=reference_result.elapsed_sec,
+            failure_reason=f"reference compiler exited with status {reference_result.returncode}",
+        )
+    candidate_result = run_command(candidate_command)
+    elapsed = reference_result.elapsed_sec + candidate_result.elapsed_sec
+    if candidate_result.returncode != 0:
+        return VerifyGateResult(
+            gate_name="compile",
+            status="fail",
+            command=command_text,
+            stdout=candidate_result.stdout,
+            stderr=candidate_result.stderr,
+            elapsed_sec=elapsed,
+            failure_reason=f"candidate compiler exited with status {candidate_result.returncode}",
+        )
+    return VerifyGateResult(
+        gate_name="compile",
+        status="pass",
+        command=command_text,
+        stdout=f"{reference_result.stdout}{candidate_result.stdout}",
+        stderr=f"{reference_result.stderr}{candidate_result.stderr}",
+        elapsed_sec=elapsed,
+    )
+
+
+def _run_polybench_pair(
+    reference_spec: PolyBenchBuildSpec,
+    candidate_spec: PolyBenchBuildSpec,
+    *,
+    run_args: list[str],
+    timeout_sec: float,
+    dry_run: bool,
+) -> tuple[VerifyGateResult, CommandResult | None, CommandResult | None]:
+    reference_command = build_run_command(reference_spec.executable_path or "reference", run_args)
+    candidate_command = build_run_command(candidate_spec.executable_path or "candidate", run_args)
+    command_text = f"{command_to_string(reference_command)} && {command_to_string(candidate_command)}"
+    if dry_run:
+        return (
+            VerifyGateResult(
+                gate_name="runtime",
+                status="skipped",
+                command=command_text,
+                failure_reason="dry-run",
+            ),
+            None,
+            None,
+        )
+
+    reference_result = run_command(reference_command, timeout_sec=timeout_sec)
+    if reference_result.timed_out or reference_result.returncode != 0:
+        reason = (
+            f"reference runtime exceeded timeout of {timeout_sec} seconds"
+            if reference_result.timed_out
+            else f"reference binary exited with status {reference_result.returncode}"
+        )
+        return (
+            VerifyGateResult(
+                gate_name="runtime",
+                status="fail",
+                command=command_text,
+                stdout=reference_result.stdout,
+                stderr=reference_result.stderr,
+                elapsed_sec=reference_result.elapsed_sec,
+                failure_reason=reason,
+            ),
+            reference_result,
+            None,
+        )
+
+    candidate_result = run_command(candidate_command, timeout_sec=timeout_sec)
+    elapsed = reference_result.elapsed_sec + candidate_result.elapsed_sec
+    if candidate_result.timed_out or candidate_result.returncode != 0:
+        reason = (
+            f"candidate runtime exceeded timeout of {timeout_sec} seconds"
+            if candidate_result.timed_out
+            else f"candidate binary exited with status {candidate_result.returncode}"
+        )
+        return (
+            VerifyGateResult(
+                gate_name="runtime",
+                status="fail",
+                command=command_text,
+                stdout=candidate_result.stdout,
+                stderr=candidate_result.stderr,
+                elapsed_sec=elapsed,
+                failure_reason=reason,
+            ),
+            reference_result,
+            candidate_result,
+        )
+
+    return (
+        VerifyGateResult(
+            gate_name="runtime",
+            status="pass",
+            command=command_text,
+            stdout=candidate_result.stdout,
+            stderr=candidate_result.stderr,
+            elapsed_sec=elapsed,
+        ),
+        reference_result,
+        candidate_result,
+    )
+
+
+def _run_polybench_sanitizer_gate(
+    candidate_spec: PolyBenchBuildSpec,
+    *,
+    verify_config: dict[str, Any],
+    run_args: list[str],
+    dry_run: bool,
+) -> VerifyGateResult:
+    sanitizer_cfg = verify_config.get("sanitizer", {})
+    compiler = str(sanitizer_cfg.get("compiler", "clang"))
+    required = bool(sanitizer_cfg.get("required", False))
+    skip_if_unavailable = bool(sanitizer_cfg.get("skip_if_unavailable", True))
+    skip_on_windows = bool(sanitizer_cfg.get("skip_on_windows", True))
+    cflags = _merge_flags(["-std=c99"], list(sanitizer_cfg.get("cflags", [])))
+    ldflags = list(sanitizer_cfg.get("ldflags", []))
+    sanitizer_spec = replace(
+        candidate_spec,
+        compiler=compiler,
+        cflags=cflags,
+        ldflags=ldflags,
+        executable_path=candidate_spec.executable_path.with_name(f"{candidate_spec.executable_path.stem}_san{candidate_spec.executable_path.suffix}")
+        if candidate_spec.executable_path is not None
+        else None,
+    )
+    compile_command = construct_polybench_compile_command(sanitizer_spec)
+    run_text = build_run_command(sanitizer_spec.executable_path or "candidate_san", run_args)
+    command_text = f"{command_to_string(compile_command)} && {command_to_string(run_text)}"
+    if dry_run:
+        return VerifyGateResult(
+            gate_name="sanitizer",
+            status="skipped",
+            command=command_text,
+            failure_reason="dry-run",
+        )
+    if os.name == "nt" and skip_on_windows and not required:
+        return VerifyGateResult(
+            gate_name="sanitizer",
+            status="skipped",
+            command=command_text,
+            failure_reason="optional sanitizer gate skipped on Windows",
+        )
+    if find_executable(compiler) is None:
+        if skip_if_unavailable and not required:
+            return VerifyGateResult(
+                gate_name="sanitizer",
+                status="skipped",
+                command=command_text,
+                failure_reason=f"optional sanitizer compiler not available: {compiler}",
+            )
+        return VerifyGateResult(
+            gate_name="sanitizer",
+            status="fail",
+            command=command_text,
+            failure_reason=f"sanitizer compiler not found on PATH: {compiler}",
+        )
+
+    compile_result = run_command(compile_command)
+    if compile_result.returncode != 0:
+        return VerifyGateResult(
+            gate_name="sanitizer",
+            status="fail",
+            command=command_text,
+            stdout=compile_result.stdout,
+            stderr=compile_result.stderr,
+            elapsed_sec=compile_result.elapsed_sec,
+            failure_reason=f"sanitizer compiler exited with status {compile_result.returncode}",
+        )
+    runtime_result = run_command(run_text, timeout_sec=float(verify_config.get("runtime", {}).get("timeout_sec", 10)))
+    elapsed = compile_result.elapsed_sec + runtime_result.elapsed_sec
+    if runtime_result.timed_out:
+        return VerifyGateResult(
+            gate_name="sanitizer",
+            status="fail",
+            command=command_text,
+            stdout=runtime_result.stdout,
+            stderr=runtime_result.stderr,
+            elapsed_sec=elapsed,
+            failure_reason=f"sanitizer runtime exceeded timeout of {verify_config.get('runtime', {}).get('timeout_sec', 10)} seconds",
+        )
+    if runtime_result.returncode != 0:
+        return VerifyGateResult(
+            gate_name="sanitizer",
+            status="fail",
+            command=command_text,
+            stdout=runtime_result.stdout,
+            stderr=runtime_result.stderr,
+            elapsed_sec=elapsed,
+            failure_reason=f"sanitizer binary exited with status {runtime_result.returncode}",
+        )
+    return VerifyGateResult(
+        gate_name="sanitizer",
+        status="pass",
+        command=command_text,
+        stdout=runtime_result.stdout,
+        stderr=runtime_result.stderr,
+        elapsed_sec=elapsed,
+    )
+
+
+def _skipped_after_failure(*gate_names: str) -> list[VerifyGateResult]:
+    return [
+        VerifyGateResult(
+            gate_name=gate_name,
+            status="skipped",
+            failure_reason="previous gate failed",
+        )
+        for gate_name in gate_names
+    ]
+
+
+def _overall_status(gates: list[VerifyGateResult]) -> tuple[str, str | None]:
+    for gate in gates:
+        if gate.status == "fail":
+            return "fail", gate.failure_reason
+    skipped = [gate for gate in gates if gate.status == "skipped"]
+    optional_skips = [
+        gate
+        for gate in skipped
+        if gate.gate_name == "sanitizer"
+        and (
+            (gate.failure_reason or "").startswith("optional sanitizer compiler not available")
+            or (gate.failure_reason or "") == "optional sanitizer gate skipped on Windows"
+        )
+    ]
+    if skipped and len(optional_skips) != len(skipped):
+        return "skipped", "one or more gates were skipped"
+    return "pass", None
+
+
+def _has_failed_gate(record: VerifyRecord) -> bool:
+    return any(gate.status == "fail" for gate in record.gates)
+
+
+def _split_cflags(values: list[str]) -> list[str]:
+    flags: list[str] = []
+    for value in values:
+        flags.extend(shlex.split(value))
+    return flags
+
+
+def _merge_flags(*groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    for group in groups:
+        for flag in group:
+            if flag not in merged:
+                merged.append(flag)
+    return merged
 
 
 def _build_spec_json(spec: PolyBenchBuildSpec) -> dict[str, Any]:
     return {
         "source_path": str(spec.source_path),
+        "utility_sources": [str(path) for path in spec.utility_sources],
         "include_dirs": [str(path) for path in spec.include_dirs],
         "defines": spec.defines,
         "cflags": spec.cflags,
         "ldflags": spec.ldflags,
         "executable_path": str(spec.executable_path) if spec.executable_path else None,
+        "compiler": spec.compiler,
+        "command": command_to_string(construct_polybench_compile_command(spec)),
     }
 
 

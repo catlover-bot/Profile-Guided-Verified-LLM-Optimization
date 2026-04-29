@@ -169,15 +169,57 @@ Run a one-kernel dry workflow on Linux/macOS:
 .venv/bin/python scripts/run_polybench_one.py --polybench-root /path/to/polybench-c-4.2.1-beta --kernel gemm --arch-tag skx-avx512 --work-dir runs/polybench/gemm_skx-avx512 --dry-run --skip-benchmark
 ```
 
-Current PolyBench support includes configurable layout discovery, architecture-conditioned prompt generation, mock candidate generation, structured logging, safety-policy checking, and a conservative one-kernel workflow. If a real PolyBench source needs driver/header/build handling that is not implemented yet, compile/runtime/output/sanitizer gates are marked skipped with `polybench build glue not implemented yet`, while the safety gate still runs.
+### One-Kernel PolyBench Verification
+
+The one-kernel workflow expects an external PolyBench/C root with the usual structure:
+
+```text
+polybench-c-4.2.1-beta/
+|-- utilities/
+|   |-- polybench.h
+|   `-- polybench.c
+`-- linear-algebra/
+    `-- blas/
+        `-- gemm/
+            |-- gemm.c
+            `-- gemm.h
+```
+
+Verify one kernel with dumped arrays on Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/run_polybench_one.py --polybench-root C:\path\to\polybench-c-4.2.1-beta --kernel gemm --arch-tag skx-avx512 --work-dir runs/polybench/gemm_verify --mode verify --size LARGE --skip-benchmark
+```
+
+Verify one kernel on Linux/macOS:
+
+```bash
+.venv/bin/python scripts/run_polybench_one.py --polybench-root /path/to/polybench-c-4.2.1-beta --kernel gemm --arch-tag skx-avx512 --work-dir runs/polybench/gemm_verify --mode verify --size LARGE --skip-benchmark
+```
+
+Benchmark-mode build preparation uses `POLYBENCH_TIME` instead of dumped arrays:
+
+```bash
+.venv/bin/python scripts/run_polybench_one.py --polybench-root /path/to/polybench-c-4.2.1-beta --kernel gemm --arch-tag skx-avx512 --work-dir runs/polybench/gemm_benchmark --mode benchmark
+```
+
+In verify mode, the script compiles the reference source and candidate source with the same PolyBench utility source, include directories, dataset macro, and linker flags. It runs both executables and compares normalized dumped output. PolyBench commonly writes dumps to `stderr`, so the default `--compare-stream auto` compares normalized `stderr` when present, otherwise normalized `stdout`. Use `--compare-stream stdout|stderr|combined` to force a stream.
+
+Current PolyBench support includes configurable layout discovery, architecture-conditioned prompt generation, mock candidate generation, one-kernel compilation against `utilities/polybench.c`, normalized dumped-output comparison, structured logging, optional sanitizer execution, and safety-policy checking.
 
 Remaining before real experiments:
 
-- Full PolyBench build glue.
 - Real LLM generator integration.
 - Slurm experiment launcher.
 - Multi-architecture benchmark execution.
 - Result aggregation and experiment dashboards.
+
+Current limitations:
+
+- Only the one-kernel workflow is supported.
+- No real LLM API is integrated yet.
+- No multi-architecture orchestration is implemented yet.
+- No full result aggregation or dashboards are implemented yet.
 
 ## Expected Future Workflow
 

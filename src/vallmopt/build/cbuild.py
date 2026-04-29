@@ -27,6 +27,28 @@ def construct_gcc_command(
     return command
 
 
+def construct_gcc_command_multi_source(
+    *,
+    sources: Sequence[str | Path],
+    output: str | Path,
+    include_dirs: Sequence[str | Path] | None = None,
+    defines: Sequence[str] | None = None,
+    cflags: Sequence[str] | None = None,
+    ldflags: Sequence[str] | None = None,
+    compiler: str = "gcc",
+) -> list[str]:
+    """Construct a gcc-style command for one or more C source files."""
+
+    command = [compiler, *(cflags or [])]
+    for include_dir in include_dirs or []:
+        command.extend(["-I", str(include_dir)])
+    for define in defines or []:
+        command.append(define if define.startswith("-D") else f"-D{define}")
+    command.extend(str(source) for source in sources)
+    command.extend(["-o", str(output), *(ldflags or [])])
+    return command
+
+
 def construct_clang_sanitizer_command(
     *,
     source: str | Path,

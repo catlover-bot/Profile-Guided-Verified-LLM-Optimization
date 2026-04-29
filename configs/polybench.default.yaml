@@ -46,8 +46,7 @@ source_patterns:
 common_include_dirs:
   - utilities
 
-compile_defines:
-  - POLYBENCH_TIME
+compile_defines: []
 
 dataset_define_template: "{size}_DATASET"
 run_args: []

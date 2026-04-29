@@ -12,6 +12,13 @@ from vallmopt.verify.compile import build_gcc_command
 from vallmopt.verify.runtime import build_run_command
 
 
+TIMING_LINE_MARKERS = [
+    "time in seconds",
+    "polybench_time",
+    "cycles",
+]
+
+
 def compare_text_outputs(reference_output: str, candidate_output: str) -> VerifyGateResult:
     """Compare captured reference and candidate stdout exactly."""
 
@@ -22,6 +29,99 @@ def compare_text_outputs(reference_output: str, candidate_output: str) -> Verify
         status="fail",
         failure_reason="candidate stdout differs from reference stdout",
     )
+
+
+def normalize_output_text(text: str, *, ignore_timing: bool = True) -> str:
+    """Normalize textual program output for deterministic exact comparison."""
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    lines = normalized.splitlines()
+    if ignore_timing:
+        lines = [
+            line.rstrip()
+            for line in lines
+            if not _looks_like_timing_line(line)
+        ]
+    else:
+        lines = [line.rstrip() for line in lines]
+    return "\n".join(lines).strip()
+
+
+def select_output_stream(
+    *,
+    stdout: str,
+    stderr: str,
+    compare_stream: str,
+    ignore_timing: bool = True,
+) -> tuple[str, str]:
+    """Select and normalize stdout/stderr/combined output for comparison."""
+
+    if compare_stream not in {"auto", "stdout", "stderr", "combined"}:
+        raise ValueError("compare_stream must be one of: auto, stdout, stderr, combined")
+    stdout_norm = normalize_output_text(stdout, ignore_timing=ignore_timing)
+    stderr_norm = normalize_output_text(stderr, ignore_timing=ignore_timing)
+    if compare_stream == "stdout":
+        return "stdout", stdout_norm
+    if compare_stream == "stderr":
+        return "stderr", stderr_norm
+    if compare_stream == "combined":
+        return "combined", normalize_output_text(f"{stdout}\n{stderr}", ignore_timing=ignore_timing)
+    if stderr_norm:
+        return "stderr", stderr_norm
+    return "stdout", stdout_norm
+
+
+def compare_program_outputs(
+    *,
+    reference_stdout: str,
+    reference_stderr: str,
+    candidate_stdout: str,
+    candidate_stderr: str,
+    compare_stream: str = "auto",
+    ignore_timing: bool = True,
+) -> tuple[VerifyGateResult, str]:
+    """Compare selected normalized streams from two program runs."""
+
+    stream, reference_output = select_output_stream(
+        stdout=reference_stdout,
+        stderr=reference_stderr,
+        compare_stream=compare_stream,
+        ignore_timing=ignore_timing,
+    )
+    candidate_stream, candidate_output = select_output_stream(
+        stdout=candidate_stdout,
+        stderr=candidate_stderr,
+        compare_stream=stream if compare_stream == "auto" else compare_stream,
+        ignore_timing=ignore_timing,
+    )
+    if stream != candidate_stream:
+        return (
+            VerifyGateResult(
+                gate_name="output",
+                status="fail",
+                failure_reason=f"selected different output streams: reference={stream}, candidate={candidate_stream}",
+            ),
+            stream,
+        )
+    if reference_output == candidate_output:
+        return VerifyGateResult(gate_name="output", status="pass"), stream
+    return (
+        VerifyGateResult(
+            gate_name="output",
+            status="fail",
+            failure_reason=f"candidate {stream} differs from reference {stream} after normalization",
+            stdout=candidate_output,
+            stderr=reference_output,
+        ),
+        stream,
+    )
+
+
+def _looks_like_timing_line(line: str) -> bool:
+    lowered = line.strip().lower()
+    if any(marker in lowered for marker in TIMING_LINE_MARKERS):
+        return True
+    return lowered.startswith("==") and "timer" in lowered
 
 
 def compare_candidate_to_reference(
