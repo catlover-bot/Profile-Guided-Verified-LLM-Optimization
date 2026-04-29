@@ -1,0 +1,85 @@
+default_dataset_size: LARGE
+dataset_sizes:
+  - MINI
+  - SMALL
+  - MEDIUM
+  - LARGE
+  - EXTRALARGE
+
+known_kernels:
+  - 2mm
+  - 3mm
+  - adi
+  - atax
+  - bicg
+  - cholesky
+  - correlation
+  - covariance
+  - deriche
+  - doitgen
+  - durbin
+  - fdtd-2d
+  - floyd-warshall
+  - gemm
+  - gemver
+  - gesummv
+  - gramschmidt
+  - heat-3d
+  - jacobi-1d
+  - jacobi-2d
+  - lu
+  - ludcmp
+  - mvt
+  - nussinov
+  - seidel-2d
+  - symm
+  - syr2k
+  - syrk
+  - trisolv
+  - trmm
+
+source_patterns:
+  - "{category}/{name}/{name}.c"
+  - "{name}/{name}.c"
+  - "**/{name}.c"
+
+common_include_dirs:
+  - utilities
+
+compile_defines:
+  - POLYBENCH_TIME
+
+dataset_define_template: "{size}_DATASET"
+run_args: []
+
+kernel_categories:
+  2mm: linear-algebra/kernels
+  3mm: linear-algebra/kernels
+  adi: stencils
+  atax: linear-algebra/kernels
+  bicg: linear-algebra/kernels
+  cholesky: linear-algebra/solvers
+  correlation: datamining
+  covariance: datamining
+  deriche: medley
+  doitgen: linear-algebra/kernels
+  durbin: linear-algebra/solvers
+  fdtd-2d: stencils
+  floyd-warshall: medley
+  gemm: linear-algebra/blas
+  gemver: linear-algebra/blas
+  gesummv: linear-algebra/blas
+  gramschmidt: linear-algebra/solvers
+  heat-3d: stencils
+  jacobi-1d: stencils
+  jacobi-2d: stencils
+  lu: linear-algebra/solvers
+  ludcmp: linear-algebra/solvers
+  mvt: linear-algebra/kernels
+  nussinov: medley
+  seidel-2d: stencils
+  symm: linear-algebra/blas
+  syr2k: linear-algebra/blas
+  syrk: linear-algebra/blas
+  trisolv: linear-algebra/solvers
+  trmm: linear-algebra/blas

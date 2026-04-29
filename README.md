@@ -20,6 +20,7 @@ This repository currently provides the experiment infrastructure only. It does n
 - Benchmark utilities for repeated timings, median, IQR, speedup, and command builders for future `hyperfine` and `perf stat` use.
 - JSONL logging utilities and structured dataclasses for candidate, verification, benchmark, and experiment records.
 - A toy-kernel smoke workflow under `examples/kernels/` and `scripts/run_smoke_pipeline.py`.
+- PolyBench/C discovery and one-kernel workflow infrastructure for external PolyBench checkouts.
 - CLI wrappers under `scripts/`.
 - Unit tests runnable with `pytest`.
 
@@ -139,6 +140,44 @@ python scripts/summarize_results.py \
   --input "runs/**/*.jsonl" \
   --out runs/summary.json
 ```
+
+## PolyBench/C Integration
+
+PolyBench/C is not included in this repository. Download or clone PolyBench/C separately, then point the scripts at that external directory.
+
+Inspect a PolyBench/C root on Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/inspect_polybench.py --polybench-root C:\path\to\polybench-c-4.2.1-beta --config configs/polybench.default.yaml --out runs/polybench/inspect.json
+```
+
+Inspect on Linux/macOS:
+
+```bash
+.venv/bin/python scripts/inspect_polybench.py --polybench-root /path/to/polybench-c-4.2.1-beta --config configs/polybench.default.yaml --out runs/polybench/inspect.json
+```
+
+Run a one-kernel dry workflow on Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/run_polybench_one.py --polybench-root C:\path\to\polybench-c-4.2.1-beta --kernel gemm --arch-tag skx-avx512 --work-dir runs/polybench/gemm_skx-avx512 --dry-run --skip-benchmark
+```
+
+Run a one-kernel dry workflow on Linux/macOS:
+
+```bash
+.venv/bin/python scripts/run_polybench_one.py --polybench-root /path/to/polybench-c-4.2.1-beta --kernel gemm --arch-tag skx-avx512 --work-dir runs/polybench/gemm_skx-avx512 --dry-run --skip-benchmark
+```
+
+Current PolyBench support includes configurable layout discovery, architecture-conditioned prompt generation, mock candidate generation, structured logging, safety-policy checking, and a conservative one-kernel workflow. If a real PolyBench source needs driver/header/build handling that is not implemented yet, compile/runtime/output/sanitizer gates are marked skipped with `polybench build glue not implemented yet`, while the safety gate still runs.
+
+Remaining before real experiments:
+
+- Full PolyBench build glue.
+- Real LLM generator integration.
+- Slurm experiment launcher.
+- Multi-architecture benchmark execution.
+- Result aggregation and experiment dashboards.
 
 ## Expected Future Workflow
 
