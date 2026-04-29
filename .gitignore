@@ -13,3 +13,9 @@ prompts/
 *.so
 *.dylib
 *.dll
+
+# Local environment / secrets
+.env
+*.env
+.secrets/
+runs/**/api_key*
