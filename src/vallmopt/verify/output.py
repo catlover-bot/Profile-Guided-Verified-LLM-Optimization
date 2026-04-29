@@ -7,6 +7,7 @@ from typing import Sequence
 
 from vallmopt.logging.schema import VerifyGateResult
 from vallmopt.utils.subprocess import command_to_string, run_command
+from vallmopt.utils.tools import find_executable
 from vallmopt.verify.compile import build_gcc_command
 from vallmopt.verify.runtime import build_run_command
 
@@ -57,6 +58,13 @@ def compare_candidate_to_reference(
             status="skipped",
             command=command_text,
             failure_reason="dry-run",
+        )
+    if find_executable(compiler) is None:
+        return VerifyGateResult(
+            gate_name="output",
+            status="fail",
+            command=command_text,
+            failure_reason=f"compiler not found on PATH: {compiler}",
         )
 
     compile_result = run_command(compile_command)

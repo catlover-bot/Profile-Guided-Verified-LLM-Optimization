@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Sequence
 
 from vallmopt.logging.schema import VerifyGateResult
+from vallmopt.utils.tools import find_executable
 from vallmopt.utils.subprocess import command_to_string, run_command
 
 
@@ -53,6 +54,13 @@ def compile_source(
             status="skipped",
             command=command_to_string(command),
             failure_reason="dry-run",
+        )
+    if find_executable(compiler) is None:
+        return VerifyGateResult(
+            gate_name="compile",
+            status="fail",
+            command=command_to_string(command),
+            failure_reason=f"compiler not found on PATH: {compiler}",
         )
 
     result = run_command(command)

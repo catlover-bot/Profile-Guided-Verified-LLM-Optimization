@@ -19,6 +19,7 @@ This repository currently provides the experiment infrastructure only. It does n
 - Lightweight safety-policy checks for forbidden alignment assumptions, fast-math, `Ofast`, and unsafe functions such as `gets`.
 - Benchmark utilities for repeated timings, median, IQR, speedup, and command builders for future `hyperfine` and `perf stat` use.
 - JSONL logging utilities and structured dataclasses for candidate, verification, benchmark, and experiment records.
+- A toy-kernel smoke workflow under `examples/kernels/` and `scripts/run_smoke_pipeline.py`.
 - CLI wrappers under `scripts/`.
 - Unit tests runnable with `pytest`.
 
@@ -46,18 +47,55 @@ On macOS/Linux, activate with:
 source .venv/bin/activate
 ```
 
+With `uv`:
+
+```bash
+uv sync --extra dev
+```
+
 ## Repository Structure
 
 ```text
 .
-├── configs/                 # Architecture, prompt, verification, and experiment configs
-├── data/
-│   ├── kernels/             # Placeholder for future kernel inputs
-│   └── candidates/          # Placeholder for future generated candidates
-├── scripts/                 # CLI entry points
-├── src/vallmopt/            # Python package
-└── tests/                   # Unit tests
+|-- configs/                 # Architecture, prompt, verification, and experiment configs
+|-- data/
+|   |-- kernels/             # Placeholder for future kernel inputs
+|   `-- candidates/          # Placeholder for future generated candidates
+|-- examples/kernels/        # Tiny local C kernels for smoke tests
+|-- scripts/                 # CLI entry points
+|-- src/vallmopt/            # Python package
+`-- tests/                   # Unit tests
 ```
+
+## Smoke Test Workflow
+
+The smoke workflow uses small local C kernels. It builds an architecture-conditioned prompt, generates or copies a candidate, verifies the candidate, writes structured logs, and summarizes the run. It does not call external LLM APIs or download PolyBench/C.
+
+Windows PowerShell:
+
+```powershell
+uv sync --extra dev
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe scripts/run_smoke_pipeline.py --kernel vector_add --arch-tag skx-avx512 --work-dir runs/smoke/vector_add_skx-avx512
+```
+
+Linux/macOS:
+
+```bash
+uv sync --extra dev
+.venv/bin/python -m pytest
+.venv/bin/python scripts/run_smoke_pipeline.py --kernel vector_add --arch-tag skx-avx512 --work-dir runs/smoke/vector_add_skx-avx512
+```
+
+To test the safety failure path on Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/run_smoke_pipeline.py --kernel vector_add --arch-tag skx-avx512 --candidate examples/kernels/vector_add/candidate_forbidden_alignment.c --work-dir runs/smoke/vector_add_safety_fail
+```
+
+Expected result: the safety gate fails and reports that `__builtin_assume_aligned` is forbidden.
+
+Smoke run outputs are written under the selected `--work-dir`, including `prompt.txt`, `candidate.c`, `candidates.jsonl`, `verify.jsonl`, `verify_record.json`, and `summary.json`. If benchmarking runs, `benchmark.jsonl` and `benchmark_record.json` are also written.
 
 ## Example Commands
 
@@ -117,4 +155,4 @@ python scripts/summarize_results.py \
 python -m pytest
 ```
 
-The tests cover architecture config loading, prompt construction, mock generation, dry-run verification, safety policy checks, benchmark statistics, and JSONL logging.
+The tests cover architecture config loading, prompt construction, mock generation, dry-run verification, smoke workflow execution, safety policy checks, benchmark statistics, and JSONL logging.

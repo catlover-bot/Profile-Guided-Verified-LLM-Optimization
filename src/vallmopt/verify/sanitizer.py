@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Sequence
 
 from vallmopt.logging.schema import VerifyGateResult
 from vallmopt.utils.subprocess import command_to_string, run_command
+from vallmopt.utils.tools import find_executable
 from vallmopt.verify.compile import build_gcc_command
 from vallmopt.verify.runtime import build_run_command
 
@@ -42,6 +44,9 @@ def run_sanitizer_gate(
     runtime_args: Sequence[str] | None = None,
     timeout_sec: float = 10,
     dry_run: bool = False,
+    required: bool = False,
+    skip_if_unavailable: bool = True,
+    skip_on_windows: bool = True,
 ) -> VerifyGateResult:
     """Build and run a sanitizer-instrumented candidate binary."""
 
@@ -60,6 +65,27 @@ def run_sanitizer_gate(
             status="skipped",
             command=command_text,
             failure_reason="dry-run",
+        )
+    if os.name == "nt" and skip_on_windows and not required:
+        return VerifyGateResult(
+            gate_name="sanitizer",
+            status="skipped",
+            command=command_text,
+            failure_reason="optional sanitizer gate skipped on Windows",
+        )
+    if find_executable(compiler) is None:
+        if skip_if_unavailable and not required:
+            return VerifyGateResult(
+                gate_name="sanitizer",
+                status="skipped",
+                command=command_text,
+                failure_reason=f"optional sanitizer compiler not available: {compiler}",
+            )
+        return VerifyGateResult(
+            gate_name="sanitizer",
+            status="fail",
+            command=command_text,
+            failure_reason=f"sanitizer compiler not found on PATH: {compiler}",
         )
 
     compile_result = run_command(compile_command)

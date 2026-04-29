@@ -1,0 +1,1 @@
+# dot_product uses deterministic built-in arrays for smoke tests.

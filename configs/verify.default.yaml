@@ -9,6 +9,9 @@ sanitizer:
   compiler: clang
   cflags: ["-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
   ldflags: ["-fsanitize=address,undefined"]
+  required: false
+  skip_if_unavailable: true
+  skip_on_windows: true
 safety:
   reject_patterns:
     - __builtin_assume_aligned

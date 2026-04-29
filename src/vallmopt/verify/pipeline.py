@@ -113,6 +113,9 @@ class VerifyPipeline:
                         runtime_args=runtime_args,
                         timeout_sec=timeout_sec,
                         dry_run=self.dry_run,
+                        required=bool(sanitizer_cfg.get("required", False)),
+                        skip_if_unavailable=bool(sanitizer_cfg.get("skip_if_unavailable", True)),
+                        skip_on_windows=bool(sanitizer_cfg.get("skip_on_windows", True)),
                     )
                     gates.append(sanitizer_gate)
 
@@ -157,6 +160,16 @@ class VerifyPipeline:
         for gate in gates:
             if gate.status == "fail":
                 return "fail", gate.failure_reason
-        if any(gate.status == "skipped" for gate in gates):
+        skipped = [gate for gate in gates if gate.status == "skipped"]
+        optional_skips = [
+            gate
+            for gate in skipped
+            if gate.gate_name == "sanitizer"
+            and (
+                (gate.failure_reason or "").startswith("optional sanitizer compiler not available")
+                or (gate.failure_reason or "") == "optional sanitizer gate skipped on Windows"
+            )
+        ]
+        if skipped and len(optional_skips) != len(skipped):
             return "skipped", "one or more gates were skipped"
         return "pass", None
