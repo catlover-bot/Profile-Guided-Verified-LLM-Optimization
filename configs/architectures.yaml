@@ -1,0 +1,19 @@
+snb-avx:
+  isa: avx
+  description: Sandy Bridge class AVX platform
+  cflags_extra: ["-march=native"]
+
+hsw-avx2:
+  isa: avx2
+  description: Haswell class AVX2 platform
+  cflags_extra: ["-march=native"]
+
+skx-avx512:
+  isa: avx512
+  description: Skylake-X class AVX-512 platform
+  cflags_extra: ["-march=native"]
+
+icl-avx512:
+  isa: avx512
+  description: Ice Lake-SP class AVX-512 platform
+  cflags_extra: ["-march=native"]

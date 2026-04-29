@@ -1,0 +1,18 @@
+compile:
+  compiler: gcc
+  cflags: ["-O3", "-Wall", "-Wextra"]
+  ldflags: []
+runtime:
+  timeout_sec: 10
+  args: []
+sanitizer:
+  compiler: clang
+  cflags: ["-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
+  ldflags: ["-fsanitize=address,undefined"]
+safety:
+  reject_patterns:
+    - __builtin_assume_aligned
+    - __attribute__((aligned
+    - "#pragma GCC optimize(\"Ofast\")"
+    - -ffast-math
+    - gets

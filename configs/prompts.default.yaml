@@ -1,0 +1,22 @@
+allowed_transformations:
+  - tiling
+  - loop interchange
+  - loop unrolling
+  - access-pattern canonicalization
+  - prefetching
+  - tail handling
+  - use of restrict only when non-aliasing is guaranteed by the benchmark driver
+safety_constraints:
+  - out-of-bounds access
+  - undefined behavior
+  - uninitialized reads
+  - input-size assumptions such as assuming loop trip counts are multiples of vector width
+  - new alignment assumptions such as __builtin_assume_aligned or aligned attributes
+  - fast-math or transformations that intentionally change floating-point semantics
+  - architecture-specific intrinsics unless explicitly enabled in config
+output_constraints:
+  - Return exactly one complete C source file.
+  - Do not output Markdown.
+  - Do not output explanations.
+  - Do not output diffs.
+intrinsics_enabled: false

@@ -1,0 +1,19 @@
+experiment_name: architecture_conditioned_c_kernel_optimization
+kernel_root: data/kernels
+candidate_root: data/candidates
+run_root: runs
+architectures:
+  - snb-avx
+  - hsw-avx2
+  - skx-avx512
+  - icl-avx512
+baseline:
+  compiler: gcc
+  cflags: ["-O3", "-march=native"]
+benchmark:
+  repeats: 7
+  warmup: 1
+logging:
+  candidates_jsonl: runs/candidates.jsonl
+  verify_jsonl: runs/verify.jsonl
+  benchmark_jsonl: runs/benchmark.jsonl
