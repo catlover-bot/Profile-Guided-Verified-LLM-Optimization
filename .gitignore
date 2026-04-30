@@ -19,3 +19,26 @@ prompts/
 *.env
 .secrets/
 runs/**/api_key*
+
+# Secrets
+.env
+*.env
+.secrets/
+*.key
+*api_key*
+*API_KEY*
+
+# Runtime logs / heavy artifacts
+runs/logs/
+runs/**/*.out
+runs/**/*.err
+runs/**/reference
+runs/**/candidate
+runs/**/*.o
+runs/**/*.exe
+runs/**/*.bin
+
+# Python/cache
+__pycache__/
+*.pyc
+.pytest_cache/
